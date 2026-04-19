@@ -30,7 +30,7 @@ app.add_middleware(
         "http://127.0.0.1:5173",
         "http://localhost:8080",
         "http://127.0.0.1:8080",
-        "https://jarai-app.netlify.app/",
+        "https://jarai-app.netlify.app",
     ],
     allow_credentials=False,
     allow_methods=["*"],
