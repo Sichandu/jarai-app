@@ -4,8 +4,9 @@ import asyncio
 from datetime import datetime, timezone
 from typing import Optional
 
-from fastapi import FastAPI, HTTPException, BackgroundTasks
+from fastapi import FastAPI, HTTPException, BackgroundTasks, Request
 from fastapi.middleware.cors import CORSMiddleware
+from fastapi.responses import JSONResponse
 from pydantic import BaseModel
 from pywebpush import webpush, WebPushException
 import firebase_admin
@@ -16,26 +17,17 @@ load_dotenv()
 
 app = FastAPI(title="JarAI Reminder API")
 
-# ── CORS ──────────────────────────────────────────────────────────────────────
-# NOTE: allow_credentials=True + allow_origins=["*"] is blocked by browsers.
-# We list origins explicitly instead.
-app.add_middleware(
-    CORSMiddleware,
-    allow_origins=[
-        "http://localhost:3000",
-        "http://127.0.0.1:3000",
-        "http://localhost:5500",
-        "http://127.0.0.1:5500",
-        "http://localhost:5173",
-        "http://127.0.0.1:5173",
-        "http://localhost:8080",
-        "http://127.0.0.1:8080",
-        "https://jarai-app.netlify.app",
-    ],
-    allow_credentials=False,
-    allow_methods=["*"],
-    allow_headers=["*"],
-)
+# ── CORS — allow everything (no credentials, so this is safe) ─────────────────
+@app.middleware("http")
+async def add_cors_headers(request: Request, call_next):
+    if request.method == "OPTIONS":
+        response = JSONResponse(content={}, status_code=200)
+    else:
+        response = await call_next(request)
+    response.headers["Access-Control-Allow-Origin"]  = "*"
+    response.headers["Access-Control-Allow-Methods"] = "GET, POST, PUT, DELETE, OPTIONS"
+    response.headers["Access-Control-Allow-Headers"] = "Content-Type, Authorization"
+    return response
 
 # ── Firebase init ─────────────────────────────────────────────────────────────
 _firebase_initialized = False
@@ -68,8 +60,8 @@ class PushSubscription(BaseModel):
 
 class ReminderCreate(BaseModel):
     text: str
-    remind_at: str          # ISO-8601, e.g. "2025-06-01T11:00:00+05:30"
-    language: str           # "en" | "hi" | "te"
+    remind_at: str
+    language: str
     subscription: PushSubscription
 
 class ReminderOut(BaseModel):
@@ -81,7 +73,6 @@ class ReminderOut(BaseModel):
 
 # ── Helpers ───────────────────────────────────────────────────────────────────
 def send_push(subscription: PushSubscription, payload: dict):
-    """Fire a single web-push notification."""
     sub_data = {
         "endpoint": subscription.endpoint,
         "keys": {
@@ -99,7 +90,6 @@ def send_push(subscription: PushSubscription, payload: dict):
 async def schedule_reminder(reminder_id: str, remind_at: datetime,
                              text: str, language: str,
                              subscription: PushSubscription):
-    """Wait until remind_at then push the notification and mark sent."""
     now = datetime.now(timezone.utc)
     delay = (remind_at - now).total_seconds()
     if delay > 0:
@@ -117,7 +107,6 @@ async def schedule_reminder(reminder_id: str, remind_at: datetime,
     except WebPushException as e:
         print(f"Push failed for {reminder_id}: {e}")
 
-    # mark as sent in Firestore
     try:
         db = get_db()
         db.collection("reminders").document(reminder_id).update({"sent": True})
@@ -137,7 +126,6 @@ def vapid_public_key():
 async def create_reminder(body: ReminderCreate, background_tasks: BackgroundTasks):
     db = get_db()
 
-    # parse remind_at
     try:
         remind_at = datetime.fromisoformat(body.remind_at)
         if remind_at.tzinfo is None:
@@ -148,7 +136,6 @@ async def create_reminder(body: ReminderCreate, background_tasks: BackgroundTask
     if remind_at <= datetime.now(timezone.utc):
         raise HTTPException(status_code=422, detail="remind_at must be in the future.")
 
-    # store in Firestore
     ref = db.collection("reminders").document()
     doc = {
         "text":       body.text,
@@ -162,7 +149,6 @@ async def create_reminder(body: ReminderCreate, background_tasks: BackgroundTask
     }
     ref.set(doc)
 
-    # schedule push in background
     background_tasks.add_task(
         schedule_reminder,
         ref.id, remind_at, body.text, body.language, body.subscription
