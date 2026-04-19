@@ -13,76 +13,351 @@
   <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
   <link href="https://fonts.googleapis.com/css2?family=Syne:wght@400;600;700;800&family=DM+Sans:ital,wght@0,300;0,400;0,500;1,300&display=swap" rel="stylesheet" />
 
-<link href="https://fonts.googleapis.com/css2?family=Orbitron:wght@400;600;800&display=swap" rel="stylesheet">
-  color:#000;
-}
+  <style>
+    /* ── Reset & base ────────────────────────────────────────────────── */
+    *, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
 
-/* TOP BAR */
-.topbar{
-  position:absolute;
-  top:0;left:0;
-  width:100%;
-  height:40px;
-  border-bottom:1px solid rgba(0,255,255,0.2);
-  display:flex;
-  justify-content:space-between;
-  padding:0 20px;
-  align-items:center;
-  font-size:12px;
-}
+    :root {
+      --bg:       #0b0b18;
+      --surface:  #13131f;
+      --card:     #1a1a2e;
+      --border:   #2a2a45;
+      --accent:   #7c5cfc;
+      --accent2:  #fc5c7d;
+      --accent3:  #5cf0c8;
+      --text:     #e8e8f0;
+      --muted:    #7070a0;
+      --success:  #3ecf8e;
+      --danger:   #fc5c7d;
+      --radius:   16px;
+      --font-h:   'Syne', sans-serif;
+      --font-b:   'DM Sans', sans-serif;
+    }
 
-</style>
+    html { scroll-behavior: smooth; }
+
+    body {
+      background: var(--bg);
+      color: var(--text);
+      font-family: var(--font-b);
+      min-height: 100vh;
+      overflow-x: hidden;
+    }
+
+    /* ── Noise overlay ───────────────────────────────────────────────── */
+    body::before {
+      content: '';
+      position: fixed; inset: 0;
+      background-image: url("data:image/svg+xml,%3Csvg viewBox='0 0 256 256' xmlns='http://www.w3.org/2000/svg'%3E%3Cfilter id='n'%3E%3CfeTurbulence type='fractalNoise' baseFrequency='0.9' numOctaves='4' stitchTiles='stitch'/%3E%3C/filter%3E%3Crect width='100%25' height='100%25' filter='url(%23n)' opacity='0.04'/%3E%3C/svg%3E");
+      pointer-events: none; z-index: 0;
+    }
+
+    /* ── Ambient glows ───────────────────────────────────────────────── */
+    .glow-1, .glow-2 {
+      position: fixed; border-radius: 50%;
+      filter: blur(120px); pointer-events: none; z-index: 0;
+    }
+    .glow-1 { width: 600px; height: 600px; top: -200px; left: -200px;
+               background: radial-gradient(circle, rgba(124,92,252,0.15), transparent 70%); }
+    .glow-2 { width: 500px; height: 500px; bottom: -150px; right: -150px;
+               background: radial-gradient(circle, rgba(252,92,125,0.12), transparent 70%); }
+
+    /* ── Layout ──────────────────────────────────────────────────────── */
+    .wrapper {
+      position: relative; z-index: 1;
+      max-width: 640px; margin: 0 auto;
+      padding: 40px 20px 80px;
+    }
+
+    /* ── Header ──────────────────────────────────────────────────────── */
+    header { text-align: center; margin-bottom: 48px; }
+    .logo-ring {
+      display: inline-flex; align-items: center; justify-content: center;
+      width: 72px; height: 72px; border-radius: 50%;
+      background: linear-gradient(135deg, var(--accent), var(--accent2));
+      margin-bottom: 16px; font-size: 32px;
+      box-shadow: 0 0 40px rgba(124,92,252,0.4);
+    }
+    h1 {
+      font-family: var(--font-h);
+      font-size: clamp(2rem, 6vw, 2.8rem);
+      font-weight: 800;
+      background: linear-gradient(135deg, #fff 30%, var(--accent));
+      -webkit-background-clip: text; -webkit-text-fill-color: transparent;
+      background-clip: text;
+      letter-spacing: -1px;
+    }
+    .tagline { color: var(--muted); font-size: 0.95rem; margin-top: 6px; font-style: italic; }
+
+    /* ── Card ────────────────────────────────────────────────────────── */
+    .card {
+      background: var(--card);
+      border: 1px solid var(--border);
+      border-radius: var(--radius);
+      padding: 28px;
+      margin-bottom: 24px;
+    }
+    .card-title {
+      font-family: var(--font-h);
+      font-size: 0.78rem;
+      font-weight: 700;
+      letter-spacing: 3px;
+      text-transform: uppercase;
+      color: var(--muted);
+      margin-bottom: 18px;
+    }
+
+    /* ── Language pills ──────────────────────────────────────────────── */
+    .lang-group {
+      display: flex; gap: 10px; flex-wrap: wrap;
+      margin-bottom: 20px;
+    }
+    .lang-btn {
+      padding: 8px 18px; border-radius: 99px;
+      border: 1.5px solid var(--border);
+      background: transparent; color: var(--muted);
+      font-family: var(--font-b); font-size: 0.9rem; cursor: pointer;
+      transition: all 0.2s;
+    }
+    .lang-btn:hover { border-color: var(--accent); color: var(--text); }
+    .lang-btn.active {
+      background: var(--accent); border-color: var(--accent);
+      color: #fff; font-weight: 500;
+    }
+
+    /* ── Voice button ────────────────────────────────────────────────── */
+    .voice-area { display: flex; flex-direction: column; align-items: center; gap: 16px; }
+    .mic-btn {
+      width: 80px; height: 80px; border-radius: 50%;
+      border: 2px solid var(--border);
+      background: var(--surface);
+      color: var(--text); font-size: 30px; cursor: pointer;
+      transition: all 0.3s;
+      display: flex; align-items: center; justify-content: center;
+      position: relative;
+    }
+    .mic-btn:hover { border-color: var(--accent); box-shadow: 0 0 20px rgba(124,92,252,0.3); }
+    .mic-btn.recording {
+      border-color: var(--accent2);
+      background: rgba(252,92,125,0.12);
+      animation: pulse-ring 1.2s ease-out infinite;
+    }
+    @keyframes pulse-ring {
+      0%   { box-shadow: 0 0 0 0 rgba(252,92,125,0.5); }
+      70%  { box-shadow: 0 0 0 22px rgba(252,92,125,0); }
+      100% { box-shadow: 0 0 0 0 rgba(252,92,125,0); }
+    }
+    .voice-hint { color: var(--muted); font-size: 0.82rem; text-align: center; line-height: 1.5; }
+    .transcript-box {
+      width: 100%; min-height: 48px;
+      background: var(--surface);
+      border: 1px solid var(--border);
+      border-radius: 10px; padding: 12px 16px;
+      color: var(--text); font-size: 0.95rem;
+      line-height: 1.5;
+      transition: border-color 0.2s;
+    }
+    .transcript-box:focus { outline: none; border-color: var(--accent); }
+    .transcript-box.has-text { border-color: var(--accent3); }
+
+    /* ── OR divider ──────────────────────────────────────────────────── */
+    .or-row {
+      display: flex; align-items: center; gap: 12px;
+      color: var(--muted); font-size: 0.82rem; margin: 6px 0;
+    }
+    .or-row::before, .or-row::after {
+      content: ''; flex: 1; height: 1px; background: var(--border);
+    }
+
+    /* ── Date & Time row ─────────────────────────────────────────────── */
+    .datetime-row { display: flex; gap: 12px; flex-wrap: wrap; }
+    .field-wrap { flex: 1; min-width: 140px; display: flex; flex-direction: column; gap: 6px; }
+    label { font-size: 0.8rem; color: var(--muted); font-weight: 500; letter-spacing: 0.5px; }
+    select, input[type="time"], input[type="date"], textarea {
+      background: var(--surface);
+      border: 1px solid var(--border);
+      border-radius: 10px;
+      color: var(--text);
+      padding: 11px 14px;
+      font-family: var(--font-b); font-size: 0.95rem;
+      width: 100%;
+      transition: border-color 0.2s;
+    }
+    select:focus, input:focus, textarea:focus {
+      outline: none; border-color: var(--accent);
+    }
+    select option { background: var(--card); }
+    #customDateWrap { display: none; }
+
+    textarea {
+      resize: vertical; min-height: 60px;
+    }
+
+    /* ── Submit button ───────────────────────────────────────────────── */
+    .btn-primary {
+      width: 100%; padding: 15px;
+      background: linear-gradient(135deg, var(--accent), #5a3fd0);
+      border: none; border-radius: 12px;
+      color: #fff; font-family: var(--font-h);
+      font-size: 1rem; font-weight: 700; letter-spacing: 0.5px;
+      cursor: pointer; transition: all 0.25s;
+      box-shadow: 0 8px 24px rgba(124,92,252,0.25);
+    }
+    .btn-primary:hover {
+      transform: translateY(-2px);
+      box-shadow: 0 12px 32px rgba(124,92,252,0.4);
+    }
+    .btn-primary:active { transform: translateY(0); }
+    .btn-primary:disabled { opacity: 0.5; cursor: not-allowed; transform: none; }
+
+    /* ── Toast ───────────────────────────────────────────────────────── */
+    #toast {
+      position: fixed; bottom: 30px; left: 50%; transform: translateX(-50%) translateY(100px);
+      background: var(--card); border: 1px solid var(--border);
+      border-radius: 12px; padding: 14px 24px;
+      font-size: 0.9rem; color: var(--text);
+      box-shadow: 0 16px 48px rgba(0,0,0,0.5);
+      transition: transform 0.4s cubic-bezier(0.34,1.56,0.64,1);
+      z-index: 999; max-width: 340px; text-align: center;
+    }
+    #toast.show { transform: translateX(-50%) translateY(0); }
+    #toast.success { border-color: var(--success); color: var(--success); }
+    #toast.error   { border-color: var(--danger);  color: var(--danger); }
+
+    /* ── Reminders list ──────────────────────────────────────────────── */
+    .reminder-item {
+      background: var(--surface);
+      border: 1px solid var(--border);
+      border-radius: 12px; padding: 14px 16px;
+      margin-bottom: 10px;
+      display: flex; align-items: flex-start; justify-content: space-between;
+      gap: 12px; animation: fadeIn 0.3s ease;
+    }
+    @keyframes fadeIn { from { opacity:0; transform:translateY(8px); } to { opacity:1; transform:translateY(0); } }
+    .reminder-item.sent { opacity: 0.5; }
+    .reminder-info { flex: 1; }
+    .reminder-text { font-size: 0.95rem; margin-bottom: 4px; }
+    .reminder-meta { font-size: 0.78rem; color: var(--muted); }
+    .badge {
+      font-size: 0.7rem; padding: 2px 8px; border-radius: 99px;
+      font-weight: 600; letter-spacing: 0.5px;
+    }
+    .badge-pending { background: rgba(124,92,252,0.15); color: var(--accent); border: 1px solid var(--accent); }
+    .badge-sent    { background: rgba(62,207,142,0.1);  color: var(--success); border: 1px solid var(--success); }
+    .del-btn {
+      background: none; border: none; color: var(--muted);
+      cursor: pointer; font-size: 18px; padding: 2px 4px;
+      transition: color 0.2s;
+    }
+    .del-btn:hover { color: var(--danger); }
+
+    #emptyState { text-align: center; color: var(--muted); padding: 32px 0; font-size: 0.9rem; }
+
+    /* ── Permission banner ───────────────────────────────────────────── */
+    #permBanner {
+      background: rgba(252,92,125,0.08);
+      border: 1px solid rgba(252,92,125,0.3);
+      border-radius: 12px; padding: 14px 18px;
+      display: flex; align-items: center; gap: 12px;
+      margin-bottom: 20px; display: none;
+    }
+    #permBanner .perm-icon { font-size: 20px; }
+    #permBanner p { flex: 1; font-size: 0.85rem; color: var(--text); line-height: 1.4; }
+    #enablePushBtn {
+      background: var(--accent2); border: none; border-radius: 8px;
+      color: #fff; padding: 8px 14px; font-family: var(--font-b);
+      font-size: 0.82rem; font-weight: 600; cursor: pointer;
+      white-space: nowrap;
+    }
+  </style>
 </head>
-
 <body>
+  <div class="glow-1"></div>
+  <div class="glow-2"></div>
 
-<div class="topbar">
-  <div>JARVIS SYSTEM v1.0</div>
-  <div id="time"></div>
-</div>
+  <div class="wrapper">
+    <!-- Header -->
+    <header>
+      <div class="logo-ring">🔔</div>
+      <h1>JarAI</h1>
+      <p class="tagline">Voice reminders in English · हिन्दी · తెలుగు</p>
+    </header>
 
-<div class="wrapper">
-
-  <!-- LEFT PANEL -->
-  <div class="panel">
-    <div class="card">
-      <h3>User</h3>
-      <input id="name" placeholder="Enter Name">
-      <input id="nickname" placeholder="Nickname">
-      <button id="startBtn">Initialize</button>
+    <!-- Push permission banner -->
+    <div id="permBanner">
+      <span class="perm-icon">🔕</span>
+      <p>Enable push notifications so JarAI can alert you at the right time.</p>
+      <button id="enablePushBtn">Enable</button>
     </div>
 
+    <!-- Create reminder card -->
     <div class="card">
-      <h3>Status</h3>
-      <p>System Active</p>
-      <p>Energy: 100%</p>
+      <div class="card-title">New Reminder</div>
+
+      <!-- Language selector -->
+      <div class="lang-group">
+        <button class="lang-btn active" data-lang="en">English</button>
+        <button class="lang-btn" data-lang="hi">हिन्दी</button>
+        <button class="lang-btn" data-lang="te">తెలుగు</button>
+      </div>
+
+      <!-- Voice input -->
+      <div class="voice-area" style="margin-bottom:16px;">
+        <button class="mic-btn" id="micBtn" title="Hold to speak">🎤</button>
+        <p class="voice-hint" id="voiceHint">Tap mic and say your reminder<br/>
+          <em>"Remind me to drink water at 11 AM"</em>
+        </p>
+        <div
+          class="transcript-box"
+          id="transcriptBox"
+          contenteditable="true"
+          role="textbox"
+          aria-label="Reminder text"
+          data-placeholder="Your reminder will appear here…"
+        ></div>
+      </div>
+
+      <div class="or-row">or type manually</div>
+
+      <!-- Manual text -->
+      <div style="margin:12px 0;">
+        <label for="manualText">Reminder text</label>
+        <textarea id="manualText" rows="2" placeholder="e.g. Drink water"></textarea>
+      </div>
+
+      <!-- Date & Time -->
+      <div class="datetime-row" style="margin-top:8px;">
+        <div class="field-wrap">
+          <label for="daySelect">Day</label>
+          <select id="daySelect">
+            <option value="today">Today</option>
+            <option value="tomorrow">Tomorrow</option>
+            <option value="custom">Custom date…</option>
+          </select>
+        </div>
+        <div class="field-wrap" id="customDateWrap">
+          <label for="customDate">Pick date</label>
+          <input type="date" id="customDate" />
+        </div>
+        <div class="field-wrap">
+          <label for="timeInput">Time</label>
+          <input type="time" id="timeInput" value="11:00" />
+        </div>
+      </div>
+
+      <button class="btn-primary" id="setReminderBtn" style="margin-top:20px;">
+        ⏰ &nbsp;Set Reminder
+      </button>
+    </div>
+
+    <!-- Reminders list card -->
+    <div class="card">
+      <div class="card-title">Upcoming Reminders</div>
+      <div id="reminderList"><div id="emptyState">No reminders yet ✨</div></div>
     </div>
   </div>
 
-  <!-- CENTER -->
-  <div class="center">
-    <div class="core">
-      <div class="mic" id="micBtn">🎤</div>
-    </div>
-    <div class="hud">VOICE COMMAND READY</div>
-  </div>
-
-  <!-- RIGHT PANEL -->
-  <div class="panel right">
-    <div class="card">
-      <h3>Diagnostics</h3>
-      <p>CPU: 34%</p>
-      <p>Network: Stable</p>
-    </div>
-
-    <div class="card">
-      <h3>Logs</h3>
-      <p>> Awaiting command...</p>
-    </div>
-  </div>
-
-</div>
-
+  <div id="toast"></div>
 
   <script>
     // ── CONFIG ────────────────────────────────────────────────────────────────
@@ -397,15 +672,5 @@
       await loadReminders();
     })();
   </script>
-
-<script>
-// CLOCK
-setInterval(()=>{
-  const now=new Date();
-  document.getElementById('time').innerText=now.toLocaleTimeString();
-},1000);
-
-// KEEP YOUR EXISTING FUNCTIONS BELOW
-</script>
 </body>
 </html>
