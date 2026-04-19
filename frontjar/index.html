@@ -1,0 +1,676 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <meta name="theme-color" content="#0f0f1a" />
+  <meta name="description" content="JarAI – Voice Reminder in English, Hindi & Telugu" />
+  <link rel="manifest" href="manifest.json" />
+  <link rel="apple-touch-icon" href="icons/icon-192.png" />
+  <title>JarAI – Voice Reminders</title>
+
+  <link rel="preconnect" href="https://fonts.googleapis.com" />
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
+  <link href="https://fonts.googleapis.com/css2?family=Syne:wght@400;600;700;800&family=DM+Sans:ital,wght@0,300;0,400;0,500;1,300&display=swap" rel="stylesheet" />
+
+  <style>
+    /* ── Reset & base ────────────────────────────────────────────────── */
+    *, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
+
+    :root {
+      --bg:       #0b0b18;
+      --surface:  #13131f;
+      --card:     #1a1a2e;
+      --border:   #2a2a45;
+      --accent:   #7c5cfc;
+      --accent2:  #fc5c7d;
+      --accent3:  #5cf0c8;
+      --text:     #e8e8f0;
+      --muted:    #7070a0;
+      --success:  #3ecf8e;
+      --danger:   #fc5c7d;
+      --radius:   16px;
+      --font-h:   'Syne', sans-serif;
+      --font-b:   'DM Sans', sans-serif;
+    }
+
+    html { scroll-behavior: smooth; }
+
+    body {
+      background: var(--bg);
+      color: var(--text);
+      font-family: var(--font-b);
+      min-height: 100vh;
+      overflow-x: hidden;
+    }
+
+    /* ── Noise overlay ───────────────────────────────────────────────── */
+    body::before {
+      content: '';
+      position: fixed; inset: 0;
+      background-image: url("data:image/svg+xml,%3Csvg viewBox='0 0 256 256' xmlns='http://www.w3.org/2000/svg'%3E%3Cfilter id='n'%3E%3CfeTurbulence type='fractalNoise' baseFrequency='0.9' numOctaves='4' stitchTiles='stitch'/%3E%3C/filter%3E%3Crect width='100%25' height='100%25' filter='url(%23n)' opacity='0.04'/%3E%3C/svg%3E");
+      pointer-events: none; z-index: 0;
+    }
+
+    /* ── Ambient glows ───────────────────────────────────────────────── */
+    .glow-1, .glow-2 {
+      position: fixed; border-radius: 50%;
+      filter: blur(120px); pointer-events: none; z-index: 0;
+    }
+    .glow-1 { width: 600px; height: 600px; top: -200px; left: -200px;
+               background: radial-gradient(circle, rgba(124,92,252,0.15), transparent 70%); }
+    .glow-2 { width: 500px; height: 500px; bottom: -150px; right: -150px;
+               background: radial-gradient(circle, rgba(252,92,125,0.12), transparent 70%); }
+
+    /* ── Layout ──────────────────────────────────────────────────────── */
+    .wrapper {
+      position: relative; z-index: 1;
+      max-width: 640px; margin: 0 auto;
+      padding: 40px 20px 80px;
+    }
+
+    /* ── Header ──────────────────────────────────────────────────────── */
+    header { text-align: center; margin-bottom: 48px; }
+    .logo-ring {
+      display: inline-flex; align-items: center; justify-content: center;
+      width: 72px; height: 72px; border-radius: 50%;
+      background: linear-gradient(135deg, var(--accent), var(--accent2));
+      margin-bottom: 16px; font-size: 32px;
+      box-shadow: 0 0 40px rgba(124,92,252,0.4);
+    }
+    h1 {
+      font-family: var(--font-h);
+      font-size: clamp(2rem, 6vw, 2.8rem);
+      font-weight: 800;
+      background: linear-gradient(135deg, #fff 30%, var(--accent));
+      -webkit-background-clip: text; -webkit-text-fill-color: transparent;
+      background-clip: text;
+      letter-spacing: -1px;
+    }
+    .tagline { color: var(--muted); font-size: 0.95rem; margin-top: 6px; font-style: italic; }
+
+    /* ── Card ────────────────────────────────────────────────────────── */
+    .card {
+      background: var(--card);
+      border: 1px solid var(--border);
+      border-radius: var(--radius);
+      padding: 28px;
+      margin-bottom: 24px;
+    }
+    .card-title {
+      font-family: var(--font-h);
+      font-size: 0.78rem;
+      font-weight: 700;
+      letter-spacing: 3px;
+      text-transform: uppercase;
+      color: var(--muted);
+      margin-bottom: 18px;
+    }
+
+    /* ── Language pills ──────────────────────────────────────────────── */
+    .lang-group {
+      display: flex; gap: 10px; flex-wrap: wrap;
+      margin-bottom: 20px;
+    }
+    .lang-btn {
+      padding: 8px 18px; border-radius: 99px;
+      border: 1.5px solid var(--border);
+      background: transparent; color: var(--muted);
+      font-family: var(--font-b); font-size: 0.9rem; cursor: pointer;
+      transition: all 0.2s;
+    }
+    .lang-btn:hover { border-color: var(--accent); color: var(--text); }
+    .lang-btn.active {
+      background: var(--accent); border-color: var(--accent);
+      color: #fff; font-weight: 500;
+    }
+
+    /* ── Voice button ────────────────────────────────────────────────── */
+    .voice-area { display: flex; flex-direction: column; align-items: center; gap: 16px; }
+    .mic-btn {
+      width: 80px; height: 80px; border-radius: 50%;
+      border: 2px solid var(--border);
+      background: var(--surface);
+      color: var(--text); font-size: 30px; cursor: pointer;
+      transition: all 0.3s;
+      display: flex; align-items: center; justify-content: center;
+      position: relative;
+    }
+    .mic-btn:hover { border-color: var(--accent); box-shadow: 0 0 20px rgba(124,92,252,0.3); }
+    .mic-btn.recording {
+      border-color: var(--accent2);
+      background: rgba(252,92,125,0.12);
+      animation: pulse-ring 1.2s ease-out infinite;
+    }
+    @keyframes pulse-ring {
+      0%   { box-shadow: 0 0 0 0 rgba(252,92,125,0.5); }
+      70%  { box-shadow: 0 0 0 22px rgba(252,92,125,0); }
+      100% { box-shadow: 0 0 0 0 rgba(252,92,125,0); }
+    }
+    .voice-hint { color: var(--muted); font-size: 0.82rem; text-align: center; line-height: 1.5; }
+    .transcript-box {
+      width: 100%; min-height: 48px;
+      background: var(--surface);
+      border: 1px solid var(--border);
+      border-radius: 10px; padding: 12px 16px;
+      color: var(--text); font-size: 0.95rem;
+      line-height: 1.5;
+      transition: border-color 0.2s;
+    }
+    .transcript-box:focus { outline: none; border-color: var(--accent); }
+    .transcript-box.has-text { border-color: var(--accent3); }
+
+    /* ── OR divider ──────────────────────────────────────────────────── */
+    .or-row {
+      display: flex; align-items: center; gap: 12px;
+      color: var(--muted); font-size: 0.82rem; margin: 6px 0;
+    }
+    .or-row::before, .or-row::after {
+      content: ''; flex: 1; height: 1px; background: var(--border);
+    }
+
+    /* ── Date & Time row ─────────────────────────────────────────────── */
+    .datetime-row { display: flex; gap: 12px; flex-wrap: wrap; }
+    .field-wrap { flex: 1; min-width: 140px; display: flex; flex-direction: column; gap: 6px; }
+    label { font-size: 0.8rem; color: var(--muted); font-weight: 500; letter-spacing: 0.5px; }
+    select, input[type="time"], input[type="date"], textarea {
+      background: var(--surface);
+      border: 1px solid var(--border);
+      border-radius: 10px;
+      color: var(--text);
+      padding: 11px 14px;
+      font-family: var(--font-b); font-size: 0.95rem;
+      width: 100%;
+      transition: border-color 0.2s;
+    }
+    select:focus, input:focus, textarea:focus {
+      outline: none; border-color: var(--accent);
+    }
+    select option { background: var(--card); }
+    #customDateWrap { display: none; }
+
+    textarea {
+      resize: vertical; min-height: 60px;
+    }
+
+    /* ── Submit button ───────────────────────────────────────────────── */
+    .btn-primary {
+      width: 100%; padding: 15px;
+      background: linear-gradient(135deg, var(--accent), #5a3fd0);
+      border: none; border-radius: 12px;
+      color: #fff; font-family: var(--font-h);
+      font-size: 1rem; font-weight: 700; letter-spacing: 0.5px;
+      cursor: pointer; transition: all 0.25s;
+      box-shadow: 0 8px 24px rgba(124,92,252,0.25);
+    }
+    .btn-primary:hover {
+      transform: translateY(-2px);
+      box-shadow: 0 12px 32px rgba(124,92,252,0.4);
+    }
+    .btn-primary:active { transform: translateY(0); }
+    .btn-primary:disabled { opacity: 0.5; cursor: not-allowed; transform: none; }
+
+    /* ── Toast ───────────────────────────────────────────────────────── */
+    #toast {
+      position: fixed; bottom: 30px; left: 50%; transform: translateX(-50%) translateY(100px);
+      background: var(--card); border: 1px solid var(--border);
+      border-radius: 12px; padding: 14px 24px;
+      font-size: 0.9rem; color: var(--text);
+      box-shadow: 0 16px 48px rgba(0,0,0,0.5);
+      transition: transform 0.4s cubic-bezier(0.34,1.56,0.64,1);
+      z-index: 999; max-width: 340px; text-align: center;
+    }
+    #toast.show { transform: translateX(-50%) translateY(0); }
+    #toast.success { border-color: var(--success); color: var(--success); }
+    #toast.error   { border-color: var(--danger);  color: var(--danger); }
+
+    /* ── Reminders list ──────────────────────────────────────────────── */
+    .reminder-item {
+      background: var(--surface);
+      border: 1px solid var(--border);
+      border-radius: 12px; padding: 14px 16px;
+      margin-bottom: 10px;
+      display: flex; align-items: flex-start; justify-content: space-between;
+      gap: 12px; animation: fadeIn 0.3s ease;
+    }
+    @keyframes fadeIn { from { opacity:0; transform:translateY(8px); } to { opacity:1; transform:translateY(0); } }
+    .reminder-item.sent { opacity: 0.5; }
+    .reminder-info { flex: 1; }
+    .reminder-text { font-size: 0.95rem; margin-bottom: 4px; }
+    .reminder-meta { font-size: 0.78rem; color: var(--muted); }
+    .badge {
+      font-size: 0.7rem; padding: 2px 8px; border-radius: 99px;
+      font-weight: 600; letter-spacing: 0.5px;
+    }
+    .badge-pending { background: rgba(124,92,252,0.15); color: var(--accent); border: 1px solid var(--accent); }
+    .badge-sent    { background: rgba(62,207,142,0.1);  color: var(--success); border: 1px solid var(--success); }
+    .del-btn {
+      background: none; border: none; color: var(--muted);
+      cursor: pointer; font-size: 18px; padding: 2px 4px;
+      transition: color 0.2s;
+    }
+    .del-btn:hover { color: var(--danger); }
+
+    #emptyState { text-align: center; color: var(--muted); padding: 32px 0; font-size: 0.9rem; }
+
+    /* ── Permission banner ───────────────────────────────────────────── */
+    #permBanner {
+      background: rgba(252,92,125,0.08);
+      border: 1px solid rgba(252,92,125,0.3);
+      border-radius: 12px; padding: 14px 18px;
+      display: flex; align-items: center; gap: 12px;
+      margin-bottom: 20px; display: none;
+    }
+    #permBanner .perm-icon { font-size: 20px; }
+    #permBanner p { flex: 1; font-size: 0.85rem; color: var(--text); line-height: 1.4; }
+    #enablePushBtn {
+      background: var(--accent2); border: none; border-radius: 8px;
+      color: #fff; padding: 8px 14px; font-family: var(--font-b);
+      font-size: 0.82rem; font-weight: 600; cursor: pointer;
+      white-space: nowrap;
+    }
+  </style>
+</head>
+<body>
+  <div class="glow-1"></div>
+  <div class="glow-2"></div>
+
+  <div class="wrapper">
+    <!-- Header -->
+    <header>
+      <div class="logo-ring">🔔</div>
+      <h1>JarAI</h1>
+      <p class="tagline">Voice reminders in English · हिन्दी · తెలుగు</p>
+    </header>
+
+    <!-- Push permission banner -->
+    <div id="permBanner">
+      <span class="perm-icon">🔕</span>
+      <p>Enable push notifications so JarAI can alert you at the right time.</p>
+      <button id="enablePushBtn">Enable</button>
+    </div>
+
+    <!-- Create reminder card -->
+    <div class="card">
+      <div class="card-title">New Reminder</div>
+
+      <!-- Language selector -->
+      <div class="lang-group">
+        <button class="lang-btn active" data-lang="en">English</button>
+        <button class="lang-btn" data-lang="hi">हिन्दी</button>
+        <button class="lang-btn" data-lang="te">తెలుగు</button>
+      </div>
+
+      <!-- Voice input -->
+      <div class="voice-area" style="margin-bottom:16px;">
+        <button class="mic-btn" id="micBtn" title="Hold to speak">🎤</button>
+        <p class="voice-hint" id="voiceHint">Tap mic and say your reminder<br/>
+          <em>"Remind me to drink water at 11 AM"</em>
+        </p>
+        <div
+          class="transcript-box"
+          id="transcriptBox"
+          contenteditable="true"
+          role="textbox"
+          aria-label="Reminder text"
+          data-placeholder="Your reminder will appear here…"
+        ></div>
+      </div>
+
+      <div class="or-row">or type manually</div>
+
+      <!-- Manual text -->
+      <div style="margin:12px 0;">
+        <label for="manualText">Reminder text</label>
+        <textarea id="manualText" rows="2" placeholder="e.g. Drink water"></textarea>
+      </div>
+
+      <!-- Date & Time -->
+      <div class="datetime-row" style="margin-top:8px;">
+        <div class="field-wrap">
+          <label for="daySelect">Day</label>
+          <select id="daySelect">
+            <option value="today">Today</option>
+            <option value="tomorrow">Tomorrow</option>
+            <option value="custom">Custom date…</option>
+          </select>
+        </div>
+        <div class="field-wrap" id="customDateWrap">
+          <label for="customDate">Pick date</label>
+          <input type="date" id="customDate" />
+        </div>
+        <div class="field-wrap">
+          <label for="timeInput">Time</label>
+          <input type="time" id="timeInput" value="11:00" />
+        </div>
+      </div>
+
+      <button class="btn-primary" id="setReminderBtn" style="margin-top:20px;">
+        ⏰ &nbsp;Set Reminder
+      </button>
+    </div>
+
+    <!-- Reminders list card -->
+    <div class="card">
+      <div class="card-title">Upcoming Reminders</div>
+      <div id="reminderList"><div id="emptyState">No reminders yet ✨</div></div>
+    </div>
+  </div>
+
+  <div id="toast"></div>
+
+  <script>
+    // ── CONFIG ────────────────────────────────────────────────────────────────
+    const API = (window.location.hostname === 'localhost' || window.location.hostname === '127.0.0.1')
+      ? 'http://localhost:8000'
+      : 'https://YOUR_RENDER_BACKEND_URL.onrender.com';   // ← replace after deploy
+
+    // ── State ─────────────────────────────────────────────────────────────────
+    let currentLang   = 'en';
+    let pushSub       = null;
+    let isRecording   = false;
+    let recognition   = null;
+    let vapidPublicKey = null;
+
+    // ── Toast ─────────────────────────────────────────────────────────────────
+    function showToast(msg, type = '') {
+      const el = document.getElementById('toast');
+      el.textContent = msg;
+      el.className = 'show ' + type;
+      clearTimeout(el._t);
+      el._t = setTimeout(() => el.className = '', 3200);
+    }
+
+    // ── Language pills ────────────────────────────────────────────────────────
+    const langHints = {
+      en: ['Tap mic and say your reminder', '"Remind me to drink water at 11 AM"'],
+      hi: ['माइक दबाएं और याद दिलाएं', '"11 बजे पानी पीना है याद दिलाओ"'],
+      te: ['మైక్ నొక్కి గుర్తు చేయండి', '"11 కి నీళ్ళు తాగాలని గుర్తు చేయి"'],
+    };
+    const langCodes = { en: 'en-IN', hi: 'hi-IN', te: 'te-IN' };
+
+    document.querySelectorAll('.lang-btn').forEach(btn => {
+      btn.addEventListener('click', () => {
+        document.querySelectorAll('.lang-btn').forEach(b => b.classList.remove('active'));
+        btn.classList.add('active');
+        currentLang = btn.dataset.lang;
+        const [h, ex] = langHints[currentLang];
+        document.getElementById('voiceHint').innerHTML = `${h}<br/><em>${ex}</em>`;
+      });
+    });
+
+    // ── Day dropdown ──────────────────────────────────────────────────────────
+    const daySelect       = document.getElementById('daySelect');
+    const customDateWrap  = document.getElementById('customDateWrap');
+    const customDateInput = document.getElementById('customDate');
+
+    // set min date to today
+    customDateInput.min = new Date().toISOString().split('T')[0];
+
+    daySelect.addEventListener('change', () => {
+      customDateWrap.style.display = daySelect.value === 'custom' ? 'flex' : 'none';
+    });
+
+    function getSelectedDate() {
+      const today    = new Date();
+      const tomorrow = new Date(today); tomorrow.setDate(today.getDate() + 1);
+      const fmt = d => d.toISOString().split('T')[0];
+      if (daySelect.value === 'today')    return fmt(today);
+      if (daySelect.value === 'tomorrow') return fmt(tomorrow);
+      return customDateInput.value;
+    }
+
+    // ── Voice recognition ─────────────────────────────────────────────────────
+    const SpeechRec = window.SpeechRecognition || window.webkitSpeechRecognition;
+    const micBtn    = document.getElementById('micBtn');
+    const txBox     = document.getElementById('transcriptBox');
+
+    if (!SpeechRec) {
+      micBtn.title = 'Speech recognition not supported in this browser';
+      micBtn.style.opacity = '0.4';
+      micBtn.disabled = true;
+      document.getElementById('voiceHint').textContent = 'Voice input not supported – please type manually.';
+    } else {
+      recognition = new SpeechRec();
+      recognition.continuous   = false;
+      recognition.interimResults = true;
+
+      recognition.onresult = e => {
+        let interim = '', final = '';
+        for (const r of e.results) {
+          r.isFinal ? (final += r[0].transcript) : (interim += r[0].transcript);
+        }
+        txBox.textContent = final || interim;
+        txBox.classList.toggle('has-text', !!(final || interim));
+      };
+
+      recognition.onerror = e => {
+        stopRecording();
+        if (e.error !== 'aborted') showToast('Mic error: ' + e.error, 'error');
+      };
+
+      recognition.onend = stopRecording;
+
+      micBtn.addEventListener('click', () => {
+        isRecording ? stopRecording() : startRecording();
+      });
+    }
+
+    function startRecording() {
+      isRecording = true;
+      recognition.lang = langCodes[currentLang];
+      recognition.start();
+      micBtn.classList.add('recording');
+      micBtn.textContent = '⏹';
+    }
+    function stopRecording() {
+      isRecording = false;
+      try { recognition.stop(); } catch(_) {}
+      micBtn.classList.remove('recording');
+      micBtn.textContent = '🎤';
+    }
+
+    // ── Service Worker & Push ─────────────────────────────────────────────────
+    async function registerSW() {
+      if (!('serviceWorker' in navigator)) return;
+      await navigator.serviceWorker.register('sw.js');
+    }
+
+    async function fetchVapidKey() {
+      try {
+        const res = await fetch(`${API}/vapid-public-key`);
+        const { publicKey } = await res.json();
+        vapidPublicKey = publicKey;
+      } catch (e) {
+        console.warn('Could not fetch VAPID key:', e);
+      }
+    }
+
+    function urlBase64ToUint8Array(base64String) {
+      const padding = '='.repeat((4 - base64String.length % 4) % 4);
+      const base64  = (base64String + padding).replace(/-/g, '+').replace(/_/g, '/');
+      const raw     = atob(base64);
+      return Uint8Array.from([...raw].map(c => c.charCodeAt(0)));
+    }
+
+    async function subscribePush() {
+      if (!('PushManager' in window)) {
+        showToast('Push not supported in this browser', 'error'); return null;
+      }
+      if (!vapidPublicKey) { showToast('Backend not reachable', 'error'); return null; }
+
+      const permission = await Notification.requestPermission();
+      if (permission !== 'granted') {
+        showToast('Notification permission denied', 'error'); return null;
+      }
+
+      const reg = await navigator.serviceWorker.ready;
+      let sub = await reg.pushManager.getSubscription();
+      if (!sub) {
+        sub = await reg.pushManager.subscribe({
+          userVisibleOnly: true,
+          applicationServerKey: urlBase64ToUint8Array(vapidPublicKey),
+        });
+      }
+      document.getElementById('permBanner').style.display = 'none';
+      return sub;
+    }
+
+    async function checkPushPermission() {
+      if (!('Notification' in window)) return;
+      if (Notification.permission === 'default') {
+        document.getElementById('permBanner').style.display = 'flex';
+      }
+    }
+
+    document.getElementById('enablePushBtn').addEventListener('click', async () => {
+      pushSub = await subscribePush();
+      if (pushSub) showToast('Notifications enabled ✅', 'success');
+    });
+
+    // ── Set reminder ──────────────────────────────────────────────────────────
+    document.getElementById('setReminderBtn').addEventListener('click', async () => {
+      const voiceText  = txBox.textContent.trim();
+      const manualText = document.getElementById('manualText').value.trim();
+      const text       = voiceText || manualText;
+      const timeVal    = document.getElementById('timeInput').value;
+      const dateVal    = getSelectedDate();
+
+      if (!text)    { showToast('Please enter or speak a reminder', 'error'); return; }
+      if (!timeVal) { showToast('Please set a time', 'error'); return; }
+      if (!dateVal) { showToast('Please select a date', 'error'); return; }
+
+      // subscribe if not yet
+      if (!pushSub) pushSub = await subscribePush();
+      if (!pushSub) return;
+
+      // build ISO timestamp (local → UTC via Date)
+      const localDt  = new Date(`${dateVal}T${timeVal}:00`);
+      if (isNaN(localDt)) { showToast('Invalid date/time', 'error'); return; }
+      if (localDt <= new Date()) { showToast('Please choose a future time', 'error'); return; }
+
+      const remindAt = localDt.toISOString();
+
+      const btn = document.getElementById('setReminderBtn');
+      btn.disabled = true; btn.textContent = 'Setting…';
+
+      try {
+        const subJson = pushSub.toJSON();
+        const res = await fetch(`${API}/reminders`, {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({
+            text, remind_at: remindAt, language: currentLang,
+            subscription: {
+              endpoint: subJson.endpoint,
+              keys: { p256dh: subJson.keys.p256dh, auth: subJson.keys.auth },
+            },
+          }),
+        });
+
+        if (!res.ok) {
+          const err = await res.json();
+          throw new Error(err.detail || 'Server error');
+        }
+
+        const reminder = await res.json();
+        showToast('Reminder set! 🔔', 'success');
+        txBox.textContent = '';
+        document.getElementById('manualText').value = '';
+        prependReminder(reminder);
+
+        // voice confirmation
+        speak(
+          { en: `Reminder set for ${timeVal}`, hi: `${timeVal} बजे याद दिलाऊंगा`, te: `${timeVal} కి గుర్తు చేస్తాను` }[currentLang],
+          currentLang
+        );
+      } catch (e) {
+        showToast('Error: ' + e.message, 'error');
+      } finally {
+        btn.disabled = false; btn.textContent = '⏰  Set Reminder';
+      }
+    });
+
+    // ── Text-to-speech ────────────────────────────────────────────────────────
+    function speak(text, lang) {
+      if (!('speechSynthesis' in window)) return;
+      const utter = new SpeechSynthesisUtterance(text);
+      utter.lang  = langCodes[lang] || 'en-IN';
+      utter.rate  = 0.95;
+      speechSynthesis.cancel();
+      speechSynthesis.speak(utter);
+    }
+
+    // ── Render reminder list ──────────────────────────────────────────────────
+    function prependReminder(r) {
+      const empty = document.getElementById('emptyState');
+      if (empty) empty.remove();
+
+      const list = document.getElementById('reminderList');
+      const dt   = new Date(r.remind_at);
+      const fmtDate = dt.toLocaleDateString('en-IN', { day:'numeric', month:'short', year:'numeric' });
+      const fmtTime = dt.toLocaleTimeString('en-IN', { hour:'2-digit', minute:'2-digit' });
+      const flagMap  = { en: '🇬🇧', hi: '🇮🇳', te: '🔵' };
+
+      const div = document.createElement('div');
+      div.className = 'reminder-item' + (r.sent ? ' sent' : '');
+      div.dataset.id = r.id;
+      div.innerHTML = `
+        <div class="reminder-info">
+          <div class="reminder-text">${r.text}</div>
+          <div class="reminder-meta">${flagMap[r.language] || ''} &nbsp;${fmtDate} at ${fmtTime}</div>
+        </div>
+        <span class="badge ${r.sent ? 'badge-sent' : 'badge-pending'}">${r.sent ? 'Sent' : 'Pending'}</span>
+        <button class="del-btn" title="Delete">✕</button>
+      `;
+      div.querySelector('.del-btn').addEventListener('click', () => deleteReminder(r.id, div));
+      list.prepend(div);
+    }
+
+    async function loadReminders() {
+      try {
+        const res  = await fetch(`${API}/reminders`);
+        const list = await res.json();
+        if (list.length === 0) return;
+        document.getElementById('emptyState')?.remove();
+        list.slice().reverse().forEach(prependReminder);
+      } catch (e) {
+        console.warn('Could not load reminders:', e);
+      }
+    }
+
+    async function deleteReminder(id, el) {
+      try {
+        await fetch(`${API}/reminders/${id}`, { method: 'DELETE' });
+        el.remove();
+        if (!document.querySelector('.reminder-item')) {
+          document.getElementById('reminderList').innerHTML =
+            '<div id="emptyState">No reminders yet ✨</div>';
+        }
+      } catch (e) {
+        showToast('Could not delete', 'error');
+      }
+    }
+
+    // ── Listen for SW "speak reminder" message ────────────────────────────────
+    navigator.serviceWorker?.addEventListener('message', e => {
+      if (e.data?.type === 'SPEAK_REMINDER') {
+        speak(e.data.text, e.data.lang || 'en');
+      }
+    });
+
+    // ── Boot ──────────────────────────────────────────────────────────────────
+    (async () => {
+      await registerSW();
+      await fetchVapidKey();
+      await checkPushPermission();
+      // try to restore existing push subscription
+      if ('serviceWorker' in navigator && 'PushManager' in navigator) {
+        const reg = await navigator.serviceWorker.ready;
+        pushSub = await reg.pushManager.getSubscription();
+      }
+      await loadReminders();
+    })();
+  </script>
+</body>
+</html>
