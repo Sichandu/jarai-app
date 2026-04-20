@@ -1,6 +1,5 @@
 import os
 import json
-import asyncio
 import httpx
 from datetime import datetime, timezone
 from contextlib import asynccontextmanager
@@ -12,8 +11,6 @@ from pywebpush import webpush, WebPushException
 import firebase_admin
 from firebase_admin import credentials, firestore, messaging
 from dotenv import load_dotenv
-from apscheduler.schedulers.asyncio import AsyncIOScheduler
-from apscheduler.jobstores.memory import MemoryJobStore
 
 load_dotenv()
 
@@ -31,14 +28,10 @@ def get_db():
         _firebase_initialized = True
     return firestore.client()
 
-# ── VAPID (web push fallback for desktop) ─────────────────────────────────────
+# ── VAPID ─────────────────────────────────────────────────────────────────────
 VAPID_PRIVATE_KEY = os.getenv("VAPID_PRIVATE_KEY", "")
 VAPID_PUBLIC_KEY  = os.getenv("VAPID_PUBLIC_KEY", "")
 VAPID_CLAIMS      = {"sub": f"mailto:{os.getenv('VAPID_EMAIL', 'admin@jarai.app')}"}
-SELF_URL          = os.getenv("SELF_URL", "")
-
-# ── Scheduler ─────────────────────────────────────────────────────────────────
-scheduler = AsyncIOScheduler(jobstores={"default": MemoryJobStore()})
 
 # ── Models ────────────────────────────────────────────────────────────────────
 class SubscriptionKeys(BaseModel):
@@ -54,7 +47,7 @@ class ReminderCreate(BaseModel):
     remind_at: str
     language: str
     subscription: PushSubscription
-    fcm_token: str = ""          # FCM token for mobile
+    fcm_token: str = ""
 
 class ReminderOut(BaseModel):
     id: str
@@ -63,7 +56,7 @@ class ReminderOut(BaseModel):
     language: str
     sent: bool
 
-# ── Send via FCM (mobile — bypasses battery killing) ─────────────────────────
+# ── Push via FCM ──────────────────────────────────────────────────────────────
 def send_fcm(fcm_token: str, title: str, body: str, reminder_id: str, lang: str):
     message = messaging.Message(
         notification=messaging.Notification(title=title, body=body),
@@ -83,10 +76,10 @@ def send_fcm(fcm_token: str, title: str, body: str, reminder_id: str, lang: str)
         ),
         token=fcm_token,
     )
-    response = messaging.send(message)
-    print(f"[FCM] Sent: {response}")
+    resp = messaging.send(message)
+    print(f"[FCM] ✅ sent: {resp}")
 
-# ── Send via Web Push (desktop fallback) ──────────────────────────────────────
+# ── Push via WebPush (desktop fallback) ───────────────────────────────────────
 def send_webpush(endpoint: str, p256dh: str, auth: str, payload: dict):
     webpush(
         subscription_info={"endpoint": endpoint, "keys": {"p256dh": p256dh, "auth": auth}},
@@ -95,94 +88,83 @@ def send_webpush(endpoint: str, p256dh: str, auth: str, payload: dict):
         vapid_claims=VAPID_CLAIMS,
     )
 
-# ── Core fire function (called by scheduler) ──────────────────────────────────
-def fire_reminder(reminder_id: str, text: str, language: str,
-                  endpoint: str, p256dh: str, auth: str, fcm_token: str):
-    print(f"[Scheduler] Firing: {reminder_id} | {text}")
+# ── Core: fire one reminder ───────────────────────────────────────────────────
+def fire_reminder(doc_id: str, data: dict):
+    lang     = data.get("language", "en")
+    text     = data.get("text", "")
+    endpoint = data.get("endpoint", "")
+    p256dh   = data.get("p256dh", "")
+    auth     = data.get("auth", "")
+    fcm_tok  = data.get("fcm_token", "")
 
     title_map = {"en": "⏰ Reminder", "hi": "⏰ याद दिलाना", "te": "⏰ రిమైండర్"}
-    title = title_map.get(language, "⏰ Reminder")
-    payload = {"title": title, "body": text, "lang": language, "id": reminder_id}
+    title     = title_map.get(lang, "⏰ Reminder")
+    payload   = {"title": title, "body": text, "lang": lang, "id": doc_id}
 
     sent = False
 
-    # Try FCM first (works on mobile even when app is closed)
-    if fcm_token:
+    # Try FCM first (reliable on mobile)
+    if fcm_tok:
         try:
-            send_fcm(fcm_token, title, text, reminder_id, language)
+            send_fcm(fcm_tok, title, text, doc_id, lang)
             sent = True
-            print(f"[FCM] ✅ Delivered via FCM")
         except Exception as e:
-            print(f"[FCM] ❌ Failed: {e} — falling back to WebPush")
+            print(f"[FCM] ❌ {e}")
 
     # Fallback to WebPush (desktop)
     if not sent and endpoint:
         try:
             send_webpush(endpoint, p256dh, auth, payload)
             sent = True
-            print(f"[WebPush] ✅ Delivered via WebPush")
+            print(f"[WebPush] ✅ sent")
         except WebPushException as e:
-            print(f"[WebPush] ❌ Failed: {e}")
+            print(f"[WebPush] ❌ {e}")
 
-    # Mark sent in Firestore
+    # Mark as sent in Firestore
     try:
-        get_db().collection("reminders").document(reminder_id).update({"sent": True})
+        get_db().collection("reminders").document(doc_id).update({"sent": True})
+        print(f"[Firestore] Marked {doc_id} as sent")
     except Exception as e:
-        print(f"[Firestore] Update failed: {e}")
+        print(f"[Firestore] ❌ {e}")
 
-# ── Keep Render alive ─────────────────────────────────────────────────────────
-async def keep_alive():
-    if not SELF_URL:
-        return
-    try:
-        async with httpx.AsyncClient(timeout=10) as client:
-            await client.get(f"{SELF_URL}/ping")
-            print("[KeepAlive] ✅ pinged")
-    except Exception as e:
-        print(f"[KeepAlive] ❌ {e}")
+# ── /check-reminders — called by external cron every 5 min ───────────────────
+def check_and_fire_due_reminders():
+    db  = get_db()
+    now = datetime.now(timezone.utc)
+    print(f"[Cron] Checking due reminders at {now.isoformat()}")
 
-# ── Restore pending reminders on startup ──────────────────────────────────────
-def restore_pending():
-    print("[Startup] Restoring pending reminders...")
-    try:
-        db = get_db()
-        docs = db.collection("reminders").where("sent", "==", False).stream()
-        now = datetime.now(timezone.utc)
-        count = 0
-        for doc in docs:
-            d = doc.to_dict()
-            try:
-                remind_at = datetime.fromisoformat(d["remind_at"])
-                if remind_at.tzinfo is None:
-                    remind_at = remind_at.replace(tzinfo=timezone.utc)
-                from datetime import timedelta
-                fire_at = remind_at if remind_at > now else now + timedelta(seconds=3)
-                scheduler.add_job(
-                    fire_reminder, trigger="date", run_date=fire_at,
-                    id=doc.id, replace_existing=True,
-                    args=[doc.id, d.get("text",""), d.get("language","en"),
-                          d.get("endpoint",""), d.get("p256dh",""),
-                          d.get("auth",""), d.get("fcm_token","")],
-                )
-                count += 1
-            except Exception as e:
-                print(f"[Startup] Skip {doc.id}: {e}")
-        print(f"[Startup] Restored {count} reminders.")
-    except Exception as e:
-        print(f"[Startup] Error: {e}")
+    docs = db.collection("reminders").where("sent", "==", False).stream()
+    fired = 0
+    for doc in docs:
+        data = doc.to_dict()
+        try:
+            remind_at = datetime.fromisoformat(data["remind_at"])
+            if remind_at.tzinfo is None:
+                remind_at = remind_at.replace(tzinfo=timezone.utc)
+
+            if remind_at <= now:
+                print(f"[Cron] Firing due reminder: {doc.id} | {data.get('text')}")
+                fire_reminder(doc.id, data)
+                fired += 1
+        except Exception as e:
+            print(f"[Cron] Error processing {doc.id}: {e}")
+
+    print(f"[Cron] Done — fired {fired} reminders.")
+    return fired
 
 # ── Lifespan ──────────────────────────────────────────────────────────────────
 @asynccontextmanager
 async def lifespan(app: FastAPI):
-    scheduler.start()
-    restore_pending()
-    if SELF_URL:
-        scheduler.add_job(keep_alive, "interval", minutes=10, id="keep_alive")
+    # On startup, immediately check for any missed reminders
+    try:
+        check_and_fire_due_reminders()
+    except Exception as e:
+        print(f"[Startup] check failed: {e}")
     yield
-    scheduler.shutdown(wait=False)
 
 app = FastAPI(title="JarAI API", lifespan=lifespan)
 
+# ── CORS ──────────────────────────────────────────────────────────────────────
 @app.middleware("http")
 async def cors(request: Request, call_next):
     if request.method == "OPTIONS":
@@ -201,7 +183,9 @@ def root():
 
 @app.get("/ping")
 def ping():
-    return {"pong": True}
+    # Called by external cron — also checks for due reminders every time
+    fired = check_and_fire_due_reminders()
+    return {"pong": True, "fired": fired, "time": datetime.now(timezone.utc).isoformat()}
 
 @app.get("/vapid-public-key")
 def get_vapid():
@@ -222,25 +206,17 @@ async def create_reminder(body: ReminderCreate):
 
     ref = db.collection("reminders").document()
     ref.set({
-        "text": body.text, "remind_at": body.remind_at,
-        "language": body.language, "sent": False,
-        "endpoint": body.subscription.endpoint,
-        "p256dh": body.subscription.keys.p256dh,
-        "auth": body.subscription.keys.auth,
-        "fcm_token": body.fcm_token,
+        "text":       body.text,
+        "remind_at":  body.remind_at,
+        "language":   body.language,
+        "sent":       False,
+        "endpoint":   body.subscription.endpoint,
+        "p256dh":     body.subscription.keys.p256dh,
+        "auth":       body.subscription.keys.auth,
+        "fcm_token":  body.fcm_token,
         "created_at": firestore.SERVER_TIMESTAMP,
     })
-
-    scheduler.add_job(
-        fire_reminder, trigger="date", run_date=remind_at,
-        id=ref.id, replace_existing=True,
-        args=[ref.id, body.text, body.language,
-              body.subscription.endpoint,
-              body.subscription.keys.p256dh,
-              body.subscription.keys.auth,
-              body.fcm_token],
-    )
-    print(f"[API] Scheduled {ref.id} at {remind_at}")
+    print(f"[API] Saved reminder {ref.id} for {body.remind_at}")
     return ReminderOut(id=ref.id, text=body.text,
                        remind_at=body.remind_at, language=body.language, sent=False)
 
@@ -251,9 +227,9 @@ def list_reminders():
     for d in db.collection("reminders").order_by("remind_at").stream():
         data = d.to_dict()
         results.append(ReminderOut(
-            id=d.id, text=data.get("text",""),
-            remind_at=data.get("remind_at",""),
-            language=data.get("language","en"),
+            id=d.id, text=data.get("text", ""),
+            remind_at=data.get("remind_at", ""),
+            language=data.get("language", "en"),
             sent=data.get("sent", False),
         ))
     return results
@@ -261,6 +237,4 @@ def list_reminders():
 @app.delete("/reminders/{rid}")
 def delete_reminder(rid: str):
     get_db().collection("reminders").document(rid).delete()
-    try: scheduler.remove_job(rid)
-    except: pass
     return {"deleted": rid}

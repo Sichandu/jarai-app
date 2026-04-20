@@ -360,6 +360,16 @@
   <div id="toast"></div>
 
   <script>
+    // Add this temporarily to debug
+window.addEventListener('load', () => {
+  setTimeout(() => {
+    if (window.fcmToken) {
+      alert('FCM OK: ' + window.fcmToken.substring(0, 30) + '...');
+    } else {
+      alert('FCM FAILED — no token. Check Firebase config.');
+    }
+  }, 3000);
+});
     // ── CONFIG ────────────────────────────────────────────────────────────────
     const API = (window.location.hostname === 'localhost' || window.location.hostname === '127.0.0.1')
       ? 'http://localhost:8000'
@@ -373,7 +383,7 @@
   storageBucket: "jarai-app.firebasestorage.app",
   messagingSenderId: "221977713173",
   appId: "1:221977713173:web:f7d934e9b1b2eba512cc1c",
-  vapidKey:  "BKWO7ucdJ8j6j287eF2EDeg1pha4gurY_fWsxkkkgx04zBVbC-RDYjPFRlhFvRDnL4Ujv0n14fZtuHqtNepma7o",
+      vapidKey:          "BKWO7ucdJ8j6j287eF2EDeg1pha4gurY_fWsxkkkgx04zBVbC-RDYjPFRlhFvRDnL4Ujv0n14fZtuHqtNepma7o",
     };
 
     // ── State ─────────────────────────────────────────────────────────────────
@@ -660,9 +670,9 @@
 
       const list = document.getElementById('reminderList');
       const dt   = new Date(r.remind_at);
-      const fmtDate = dt.toLocaleDateString('en-IN', { day:'numeric', month:'short', year:'numeric' });
-      const fmtTime = dt.toLocaleTimeString('en-IN', { hour:'2-digit', minute:'2-digit' });
-      const flagMap  = { en: '🇬🇧', hi: '🇮🇳', te: '🔵' };
+      const fmtDate = dt.toLocaleDateString('en-IN', { day:'numeric', month:'short', year:'numeric', timeZone:'Asia/Kolkata' });
+      const fmtTime = dt.toLocaleTimeString('en-IN', { hour:'2-digit', minute:'2-digit', timeZone:'Asia/Kolkata' });
+      const flagMap  = { en: '🇮🇳', hi: '🇮🇳', te: '🇮🇳' };
 
       const div = document.createElement('div');
       div.className = 'reminder-item' + (r.sent ? ' sent' : '');
