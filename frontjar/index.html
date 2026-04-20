@@ -360,16 +360,6 @@
   <div id="toast"></div>
 
   <script>
-    // Add this temporarily to debug
-window.addEventListener('load', () => {
-  setTimeout(() => {
-    if (window.fcmToken) {
-      alert('FCM OK: ' + window.fcmToken.substring(0, 30) + '...');
-    } else {
-      alert('FCM FAILED — no token. Check Firebase config.');
-    }
-  }, 3000);
-});
     // ── CONFIG ────────────────────────────────────────────────────────────────
     const API = (window.location.hostname === 'localhost' || window.location.hostname === '127.0.0.1')
       ? 'http://localhost:8000'
@@ -383,7 +373,7 @@ window.addEventListener('load', () => {
   storageBucket: "jarai-app.firebasestorage.app",
   messagingSenderId: "221977713173",
   appId: "1:221977713173:web:f7d934e9b1b2eba512cc1c",
-      vapidKey: "BKWO7ucdJ8j6j287eF2EDeg1pha4gurY_fWsxkkkgx04zBVbC-RDYjPFRlhFvRDnL4Ujv0n14fZtuHqtNepma7o",
+      vapidKey:          "BKWO7ucdJ8j6j287eF2EDeg1pha4gurY_fWsxkkkgx04zBVbC-RDYjPFRlhFvRDnL4Ujv0n14fZtuHqtNepma7o",
     };
 
     // ── State ─────────────────────────────────────────────────────────────────
@@ -513,27 +503,54 @@ window.addEventListener('load', () => {
     // ── Get FCM token (required for mobile push) ──────────────────────────────
     async function initFCM() {
       try {
-        // Dynamically import Firebase
-        const { initializeApp } = await import('https://www.gstatic.com/firebasejs/10.12.0/firebase-app.js');
+        console.log('[FCM] Step 1: importing Firebase...');
+        const { initializeApp, getApps } = await import('https://www.gstatic.com/firebasejs/10.12.0/firebase-app.js');
         const { getMessaging, getToken, onMessage } = await import('https://www.gstatic.com/firebasejs/10.12.0/firebase-messaging.js');
+        console.log('[FCM] Step 2: Firebase imported ✅');
 
-        const firebaseApp = initializeApp(FIREBASE_CONFIG);
-        const messaging   = getMessaging(firebaseApp);
+        // avoid duplicate app init
+        const firebaseApp = getApps().length === 0
+          ? initializeApp(FIREBASE_CONFIG)
+          : getApps()[0];
+        console.log('[FCM] Step 3: App initialized ✅');
+
+        const messaging = getMessaging(firebaseApp);
+        console.log('[FCM] Step 4: Messaging instance created ✅');
+
+        // Check notification permission explicitly
+        const permission = Notification.permission;
+        console.log('[FCM] Step 5: Notification permission =', permission);
+        if (permission !== 'granted') {
+          console.warn('[FCM] Permission not granted — requesting...');
+          const result = await Notification.requestPermission();
+          console.log('[FCM] Permission result:', result);
+          if (result !== 'granted') {
+            showToast('Please allow notifications for reminders to work', 'error');
+            return;
+          }
+        }
 
         const reg = await navigator.serviceWorker.ready;
+        console.log('[FCM] Step 6: SW ready, scope =', reg.scope);
+
+        console.log('[FCM] Step 7: Requesting FCM token...');
+        console.log('[FCM] vapidKey length:', FIREBASE_CONFIG.vapidKey?.length);
+
         const token = await getToken(messaging, {
-          vapidKey:            FIREBASE_CONFIG.vapidKey,
+          vapidKey: FIREBASE_CONFIG.vapidKey,
           serviceWorkerRegistration: reg,
         });
 
         if (token) {
           fcmToken = token;
-          console.log('[FCM] Token obtained ✅');
+          console.log('[FCM] ✅ Token obtained:', token.substring(0, 40) + '...');
+          showToast('Notifications ready ✅', 'success');
         } else {
-          console.warn('[FCM] No token — notification permission may be denied');
+          console.warn('[FCM] ⚠️ getToken returned empty — permission or vapidKey issue');
+          showToast('FCM token empty — check vapidKey', 'error');
         }
 
-        // Handle foreground messages (app is open)
+        // Handle foreground messages
         onMessage(messaging, (payload) => {
           console.log('[FCM] Foreground message:', payload);
           const body = payload.data?.body || payload.notification?.body || '';
@@ -543,7 +560,11 @@ window.addEventListener('load', () => {
         });
 
       } catch (e) {
-        console.warn('[FCM] Init failed (desktop fallback active):', e.message);
+        console.error('[FCM] ❌ Full error:', e);
+        console.error('[FCM] Error name:', e.name);
+        console.error('[FCM] Error message:', e.message);
+        console.error('[FCM] Error stack:', e.stack);
+        showToast('FCM error: ' + e.message, 'error');
       }
     }
 
