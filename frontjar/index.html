@@ -365,9 +365,21 @@
       ? 'http://localhost:8000'
       : 'https://jarai-backend.onrender.com';   // ← replace after deploy
 
+    // ── Firebase config — REPLACE all REPLACE_xxx values ────────────────────
+    const FIREBASE_CONFIG = {
+  apiKey: "AIzaSyC4wy6kNsI7IE7OeWNUO9pNcVSM-Zp1rcE",
+  authDomain: "jarai-app.firebaseapp.com",
+  projectId: "jarai-app",
+  storageBucket: "jarai-app.firebasestorage.app",
+  messagingSenderId: "221977713173",
+  appId: "1:221977713173:web:f7d934e9b1b2eba512cc1c",
+  vapidKey:  "BKWO7ucdJ8j6j287eF2EDeg1pha4gurY_fWsxkkkgx04zBVbC-RDYjPFRlhFvRDnL4Ujv0n14fZtuHqtNepma7o",
+    };
+
     // ── State ─────────────────────────────────────────────────────────────────
     let currentLang   = 'en';
     let pushSub       = null;
+    let fcmToken      = null;
     let isRecording   = false;
     let recognition   = null;
     let vapidPublicKey = null;
@@ -473,7 +485,9 @@
     // ── Service Worker & Push ─────────────────────────────────────────────────
     async function registerSW() {
       if (!('serviceWorker' in navigator)) return;
-      await navigator.serviceWorker.register('sw.js');
+      await navigator.serviceWorker.register('/sw.js', { scope: '/' });
+      await navigator.serviceWorker.register('/firebase-messaging-sw.js', { scope: '/' })
+        .catch(e => console.warn('FCM SW reg failed:', e));
     }
 
     async function fetchVapidKey() {
@@ -483,6 +497,43 @@
         vapidPublicKey = publicKey;
       } catch (e) {
         console.warn('Could not fetch VAPID key:', e);
+      }
+    }
+
+    // ── Get FCM token (required for mobile push) ──────────────────────────────
+    async function initFCM() {
+      try {
+        // Dynamically import Firebase
+        const { initializeApp } = await import('https://www.gstatic.com/firebasejs/10.12.0/firebase-app.js');
+        const { getMessaging, getToken, onMessage } = await import('https://www.gstatic.com/firebasejs/10.12.0/firebase-messaging.js');
+
+        const firebaseApp = initializeApp(FIREBASE_CONFIG);
+        const messaging   = getMessaging(firebaseApp);
+
+        const reg = await navigator.serviceWorker.ready;
+        const token = await getToken(messaging, {
+          vapidKey:            FIREBASE_CONFIG.vapidKey,
+          serviceWorkerRegistration: reg,
+        });
+
+        if (token) {
+          fcmToken = token;
+          console.log('[FCM] Token obtained ✅');
+        } else {
+          console.warn('[FCM] No token — notification permission may be denied');
+        }
+
+        // Handle foreground messages (app is open)
+        onMessage(messaging, (payload) => {
+          console.log('[FCM] Foreground message:', payload);
+          const body = payload.data?.body || payload.notification?.body || '';
+          const lang = payload.data?.lang || 'en';
+          speak(body, lang);
+          showToast('⏰ ' + body, 'success');
+        });
+
+      } catch (e) {
+        console.warn('[FCM] Init failed (desktop fallback active):', e.message);
       }
     }
 
@@ -561,6 +612,7 @@
           headers: { 'Content-Type': 'application/json' },
           body: JSON.stringify({
             text, remind_at: remindAt, language: currentLang,
+            fcm_token: fcmToken || '',
             subscription: {
               endpoint: subJson.endpoint,
               keys: { p256dh: subJson.keys.p256dh, auth: subJson.keys.auth },
@@ -664,11 +716,13 @@
       await registerSW();
       await fetchVapidKey();
       await checkPushPermission();
-      // try to restore existing push subscription
+      // restore existing web push subscription
       if ('serviceWorker' in navigator && 'PushManager' in navigator) {
         const reg = await navigator.serviceWorker.ready;
         pushSub = await reg.pushManager.getSubscription();
       }
+      // init FCM for mobile push (runs in background)
+      initFCM();
       await loadReminders();
     })();
   </script>
