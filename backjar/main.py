@@ -1,11 +1,11 @@
 import os
 import json
-import httpx
+import asyncio
 from datetime import datetime, timezone
 from contextlib import asynccontextmanager
 
 from fastapi import FastAPI, HTTPException, Request
-from fastapi.responses import JSONResponse
+from fastapi.responses import JSONResponse, StreamingResponse
 from pydantic import BaseModel
 from pywebpush import webpush, WebPushException
 import firebase_admin
@@ -14,7 +14,7 @@ from dotenv import load_dotenv
 
 load_dotenv()
 
-# ── Firebase ──────────────────────────────────────────────────────────────────
+# ── Firebase ───────────────────────────────────────────────────────────────────
 _firebase_initialized = False
 
 def get_db():
@@ -28,12 +28,56 @@ def get_db():
         _firebase_initialized = True
     return firestore.client()
 
-# ── VAPID ─────────────────────────────────────────────────────────────────────
+# ── VAPID ──────────────────────────────────────────────────────────────────────
 VAPID_PRIVATE_KEY = os.getenv("VAPID_PRIVATE_KEY", "")
 VAPID_PUBLIC_KEY  = os.getenv("VAPID_PUBLIC_KEY", "")
 VAPID_CLAIMS      = {"sub": f"mailto:{os.getenv('VAPID_EMAIL', 'admin@jarai.app')}"}
 
-# ── Models ────────────────────────────────────────────────────────────────────
+# ── In-memory scheduler ────────────────────────────────────────────────────────
+# Maps reminder_id → asyncio.Task so we can cancel on delete
+_scheduled: dict[str, asyncio.Task] = {}
+
+async def _fire_at(reminder_id: str, remind_at: datetime, data: dict):
+    """Sleep until remind_at, then fire the reminder — exact to the second."""
+    now   = datetime.now(timezone.utc)
+    delay = (remind_at - now).total_seconds()
+
+    if delay > 0:
+        print(f"[Scheduler] Waiting {delay:.0f}s for reminder {reminder_id}")
+        await asyncio.sleep(delay)
+
+    # Re-check Firestore — client timer may have already fired it
+    try:
+        doc = get_db().collection("reminders").document(reminder_id).get()
+        if not doc.exists or doc.to_dict().get("sent"):
+            print(f"[Scheduler] {reminder_id} already sent — skipping")
+            _scheduled.pop(reminder_id, None)
+            return
+    except Exception as e:
+        print(f"[Scheduler] Firestore check failed: {e}")
+
+    print(f"[Scheduler] Firing {reminder_id}: {data.get('text')}")
+    fire_reminder(reminder_id, data)
+    _scheduled.pop(reminder_id, None)
+
+def schedule_reminder(reminder_id: str, remind_at: datetime, data: dict):
+    """Schedule a reminder in the asyncio event loop."""
+    # Cancel any existing task for this id
+    existing = _scheduled.get(reminder_id)
+    if existing and not existing.done():
+        existing.cancel()
+
+    task = asyncio.ensure_future(_fire_at(reminder_id, remind_at, data))
+    _scheduled[reminder_id] = task
+    print(f"[Scheduler] Booked {reminder_id} for {remind_at.isoformat()}")
+
+def cancel_scheduled(reminder_id: str):
+    task = _scheduled.pop(reminder_id, None)
+    if task and not task.done():
+        task.cancel()
+        print(f"[Scheduler] Cancelled {reminder_id}")
+
+# ── Models ─────────────────────────────────────────────────────────────────────
 class SubscriptionKeys(BaseModel):
     p256dh: str
     auth: str
@@ -56,11 +100,11 @@ class ReminderOut(BaseModel):
     language: str
     sent: bool
 
-# ── Push via FCM ──────────────────────────────────────────────────────────────
+# ── Push via FCM ───────────────────────────────────────────────────────────────
 def send_fcm(fcm_token: str, title: str, body: str, reminder_id: str, lang: str):
     message = messaging.Message(
         notification=messaging.Notification(title=title, body=body),
-        data={"id": reminder_id, "lang": lang, "body": body},
+        data={"id": reminder_id, "lang": lang, "body": body, "title": title},
         android=messaging.AndroidConfig(
             priority="high",
             notification=messaging.AndroidNotification(
@@ -79,7 +123,7 @@ def send_fcm(fcm_token: str, title: str, body: str, reminder_id: str, lang: str)
     resp = messaging.send(message)
     print(f"[FCM] ✅ sent: {resp}")
 
-# ── Push via WebPush (desktop fallback) ───────────────────────────────────────
+# ── Push via WebPush (desktop fallback) ────────────────────────────────────────
 def send_webpush(endpoint: str, p256dh: str, auth: str, payload: dict):
     webpush(
         subscription_info={"endpoint": endpoint, "keys": {"p256dh": p256dh, "auth": auth}},
@@ -88,7 +132,7 @@ def send_webpush(endpoint: str, p256dh: str, auth: str, payload: dict):
         vapid_claims=VAPID_CLAIMS,
     )
 
-# ── Core: fire one reminder ───────────────────────────────────────────────────
+# ── Core: fire one reminder ────────────────────────────────────────────────────
 def fire_reminder(doc_id: str, data: dict):
     lang     = data.get("language", "en")
     text     = data.get("text", "")
@@ -103,7 +147,6 @@ def fire_reminder(doc_id: str, data: dict):
 
     sent = False
 
-    # Try FCM first (reliable on mobile)
     if fcm_tok:
         try:
             send_fcm(fcm_tok, title, text, doc_id, lang)
@@ -111,7 +154,6 @@ def fire_reminder(doc_id: str, data: dict):
         except Exception as e:
             print(f"[FCM] ❌ {e}")
 
-    # Fallback to WebPush (desktop)
     if not sent and endpoint:
         try:
             send_webpush(endpoint, p256dh, auth, payload)
@@ -120,21 +162,25 @@ def fire_reminder(doc_id: str, data: dict):
         except WebPushException as e:
             print(f"[WebPush] ❌ {e}")
 
-    # Mark as sent in Firestore
     try:
         get_db().collection("reminders").document(doc_id).update({"sent": True})
         print(f"[Firestore] Marked {doc_id} as sent")
     except Exception as e:
         print(f"[Firestore] ❌ {e}")
 
-# ── /check-reminders — called by external cron every 5 min ───────────────────
-def check_and_fire_due_reminders():
+# ── On startup: reload all pending reminders into scheduler ───────────────────
+def reload_pending_reminders():
+    """
+    Called once at startup. Reschedules any reminders that were pending
+    when the server last restarted (e.g. after Render woke up).
+    Also immediately fires any that are already overdue.
+    """
     db  = get_db()
     now = datetime.now(timezone.utc)
-    print(f"[Cron] Checking due reminders at {now.isoformat()}")
+    print(f"[Startup] Loading pending reminders at {now.isoformat()}")
 
-    docs = db.collection("reminders").where("sent", "==", False).stream()
-    fired = 0
+    docs  = db.collection("reminders").where("sent", "==", False).stream()
+    count = 0
     for doc in docs:
         data = doc.to_dict()
         try:
@@ -143,28 +189,33 @@ def check_and_fire_due_reminders():
                 remind_at = remind_at.replace(tzinfo=timezone.utc)
 
             if remind_at <= now:
-                print(f"[Cron] Firing due reminder: {doc.id} | {data.get('text')}")
+                # Already overdue — fire immediately
+                print(f"[Startup] Overdue, firing now: {doc.id}")
                 fire_reminder(doc.id, data)
-                fired += 1
+            else:
+                # Schedule for future
+                schedule_reminder(doc.id, remind_at, data)
+                count += 1
         except Exception as e:
-            print(f"[Cron] Error processing {doc.id}: {e}")
+            print(f"[Startup] Error for {doc.id}: {e}")
 
-    print(f"[Cron] Done — fired {fired} reminders.")
-    return fired
+    print(f"[Startup] Scheduled {count} pending reminders")
 
-# ── Lifespan ──────────────────────────────────────────────────────────────────
+# ── Lifespan ───────────────────────────────────────────────────────────────────
 @asynccontextmanager
 async def lifespan(app: FastAPI):
-    # On startup, immediately check for any missed reminders
     try:
-        check_and_fire_due_reminders()
+        reload_pending_reminders()
     except Exception as e:
-        print(f"[Startup] check failed: {e}")
+        print(f"[Startup] Failed: {e}")
     yield
+    # Cancel all tasks on shutdown
+    for task in _scheduled.values():
+        task.cancel()
 
 app = FastAPI(title="JarAI API", lifespan=lifespan)
 
-# ── CORS ──────────────────────────────────────────────────────────────────────
+# ── CORS ───────────────────────────────────────────────────────────────────────
 @app.middleware("http")
 async def cors(request: Request, call_next):
     if request.method == "OPTIONS":
@@ -176,20 +227,61 @@ async def cors(request: Request, call_next):
     r.headers["Access-Control-Allow-Headers"] = "Content-Type,Authorization"
     return r
 
-# ── Routes ────────────────────────────────────────────────────────────────────
+# ── Routes ─────────────────────────────────────────────────────────────────────
 @app.get("/")
 def root():
-    return {"status": "JarAI backend running ✅"}
+    return {"status": "JarAI backend running ✅", "scheduled": len(_scheduled)}
 
 @app.get("/ping")
 def ping():
-    # Called by external cron — also checks for due reminders every time
-    fired = check_and_fire_due_reminders()
-    return {"pong": True, "fired": fired, "time": datetime.now(timezone.utc).isoformat()}
+    """
+    Legacy cron backup — still works as a last-resort safety net.
+    But now the asyncio scheduler handles exact timing without needing this.
+    """
+    db  = get_db()
+    now = datetime.now(timezone.utc)
+    docs  = db.collection("reminders").where("sent", "==", False).stream()
+    fired = 0
+    for doc in docs:
+        data = doc.to_dict()
+        try:
+            remind_at = datetime.fromisoformat(data["remind_at"])
+            if remind_at.tzinfo is None:
+                remind_at = remind_at.replace(tzinfo=timezone.utc)
+            if remind_at <= now:
+                fire_reminder(doc.id, data)
+                fired += 1
+        except Exception as e:
+            print(f"[Ping] Error {doc.id}: {e}")
+    return {"pong": True, "fired": fired, "scheduled": len(_scheduled)}
 
 @app.get("/vapid-public-key")
 def get_vapid():
     return {"publicKey": VAPID_PUBLIC_KEY}
+
+# ── SSE keepalive — frontend connects to this to keep Render awake ─────────────
+@app.get("/keepalive")
+async def keepalive():
+    """
+    The frontend opens an EventSource to this endpoint.
+    It sends a heartbeat every 25 seconds — Render's idle timeout is 15 min,
+    so this keeps the server alive as long as any browser tab has JarAI open.
+    """
+    async def event_stream():
+        count = 0
+        while True:
+            count += 1
+            yield f"data: {json.dumps({'beat': count, 'scheduled': len(_scheduled)})}\n\n"
+            await asyncio.sleep(25)
+
+    return StreamingResponse(
+        event_stream(),
+        media_type="text/event-stream",
+        headers={
+            "Cache-Control": "no-cache",
+            "X-Accel-Buffering": "no",   # disable nginx buffering on Render
+        }
+    )
 
 @app.post("/reminders", response_model=ReminderOut)
 async def create_reminder(body: ReminderCreate):
@@ -205,7 +297,7 @@ async def create_reminder(body: ReminderCreate):
         raise HTTPException(422, "remind_at must be in the future")
 
     ref = db.collection("reminders").document()
-    ref.set({
+    data = {
         "text":       body.text,
         "remind_at":  body.remind_at,
         "language":   body.language,
@@ -215,10 +307,17 @@ async def create_reminder(body: ReminderCreate):
         "auth":       body.subscription.keys.auth,
         "fcm_token":  body.fcm_token,
         "created_at": firestore.SERVER_TIMESTAMP,
-    })
-    print(f"[API] Saved reminder {ref.id} for {body.remind_at}")
-    return ReminderOut(id=ref.id, text=body.text,
-                       remind_at=body.remind_at, language=body.language, sent=False)
+    }
+    ref.set(data)
+    print(f"[API] Saved {ref.id} for {body.remind_at}")
+
+    # Schedule exact-time firing in asyncio
+    schedule_reminder(ref.id, remind_at, data)
+
+    return ReminderOut(
+        id=ref.id, text=body.text,
+        remind_at=body.remind_at, language=body.language, sent=False
+    )
 
 @app.get("/reminders", response_model=list[ReminderOut])
 def list_reminders():
@@ -236,5 +335,17 @@ def list_reminders():
 
 @app.delete("/reminders/{rid}")
 def delete_reminder(rid: str):
+    cancel_scheduled(rid)   # stop the asyncio timer too
     get_db().collection("reminders").document(rid).delete()
     return {"deleted": rid}
+
+@app.post("/reminders/{rid}/mark-sent")
+def mark_reminder_sent(rid: str):
+    """Called by the client countdown timer — prevents double-firing."""
+    cancel_scheduled(rid)   # server doesn't need to fire it anymore
+    try:
+        get_db().collection("reminders").document(rid).update({"sent": True})
+        print(f"[API] Client marked {rid} as sent")
+        return {"marked": rid}
+    except Exception as e:
+        raise HTTPException(500, str(e))

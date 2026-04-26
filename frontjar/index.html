@@ -269,6 +269,37 @@
       font-size: 0.82rem; font-weight: 600; cursor: pointer;
       white-space: nowrap;
     }
+
+    /* ── Active countdown panel ───────────────────────────────────────── */
+    #countdownPanel {
+      display: none;
+      background: linear-gradient(135deg, rgba(124,92,252,0.08), rgba(92,240,200,0.05));
+      border: 1px solid rgba(124,92,252,0.3);
+      border-radius: var(--radius);
+      padding: 20px 24px;
+      margin-bottom: 24px;
+    }
+    #countdownPanel.active { display: block; animation: fadeIn 0.4s ease; }
+    .countdown-label {
+      font-size: 0.72rem; letter-spacing: 3px; text-transform: uppercase;
+      color: var(--muted); margin-bottom: 10px; font-family: var(--font-h);
+    }
+    .countdown-entry {
+      display: flex; align-items: center; justify-content: space-between;
+      background: var(--surface); border-radius: 10px; padding: 10px 14px;
+      border: 1px solid var(--border); margin-bottom: 8px;
+    }
+    .countdown-text {
+      font-size: 0.85rem; color: var(--text);
+      flex: 1; text-align: left; margin-right: 12px;
+      white-space: nowrap; overflow: hidden; text-overflow: ellipsis;
+    }
+    .countdown-clock {
+      font-family: var(--font-h); font-size: 1.1rem; font-weight: 700;
+      color: var(--accent3); letter-spacing: 2px; min-width: 72px; text-align: right;
+    }
+    .countdown-clock.urgent { color: var(--accent2); animation: blink 0.7s step-end infinite; }
+    @keyframes blink { 0%,100%{opacity:1} 50%{opacity:0.3} }
   </style>
 </head>
 <body>
@@ -290,7 +321,13 @@
       <button id="enablePushBtn">Enable</button>
     </div>
 
-    <!-- Create reminder card -->
+    <!-- ── Active countdowns ──────────────────────────────────────────── -->
+    <div id="countdownPanel">
+      <div class="countdown-label">⏳ Active Countdowns</div>
+      <div id="countdownTimers"></div>
+    </div>
+
+        <!-- Create reminder card -->
     <div class="card">
       <div class="card-title">New Reminder</div>
 
@@ -550,13 +587,18 @@
           showToast('FCM token empty — check vapidKey', 'error');
         }
 
-        // Handle foreground messages
+        // Handle foreground messages (app is open)
         onMessage(messaging, (payload) => {
           console.log('[FCM] Foreground message:', payload);
+          // data.body is set explicitly in main.py send_fcm()
           const body = payload.data?.body || payload.notification?.body || '';
-          const lang = payload.data?.lang || 'en';
-          speak(body, lang);
-          showToast('⏰ ' + body, 'success');
+          const lang = payload.data?.lang  || 'en';
+          const id   = payload.data?.id    || '';
+          if (body) {
+            speak(body, lang);
+            showToast('⏰ ' + body, 'success');
+            markReminderSentInUI(id);
+          }
         });
 
       } catch (e) {
@@ -610,6 +652,111 @@
       if (pushSub) showToast('Notifications enabled ✅', 'success');
     });
 
+    // ── Countdown system ──────────────────────────────────────────────────────
+    const activeCountdowns = new Map(); // id → intervalId
+    const titleMap = { en: '⏰ Reminder', hi: '⏰ याद दिलाना', te: '⏰ రిమైండర్' };
+
+    function formatCountdown(msLeft) {
+      if (msLeft <= 0) return '00:00';
+      const totalSec = Math.floor(msLeft / 1000);
+      const h = Math.floor(totalSec / 3600);
+      const m = Math.floor((totalSec % 3600) / 60);
+      const s = totalSec % 60;
+      if (h > 0) return `${String(h).padStart(2,'0')}:${String(m).padStart(2,'0')}:${String(s).padStart(2,'0')}`;
+      return `${String(m).padStart(2,'0')}:${String(s).padStart(2,'0')}`;
+    }
+
+    function startCountdown(reminder) {
+      if (reminder.sent) return;
+      const targetMs = new Date(reminder.remind_at).getTime();
+      if (targetMs <= Date.now()) return;
+
+      const panel     = document.getElementById('countdownPanel');
+      const container = document.getElementById('countdownTimers');
+
+      const row = document.createElement('div');
+      row.className = 'countdown-entry';
+      row.id = `cdt-${reminder.id}`;
+      row.innerHTML = `
+        <span class="countdown-text" title="${reminder.text}">${reminder.text}</span>
+        <span class="countdown-clock" id="clk-${reminder.id}">${formatCountdown(targetMs - Date.now())}</span>
+      `;
+      container.appendChild(row);
+      panel.classList.add('active');
+
+      const intervalId = setInterval(async () => {
+        const left  = new Date(reminder.remind_at).getTime() - Date.now();
+        const clkEl = document.getElementById(`clk-${reminder.id}`);
+
+        if (left <= 0) {
+          clearInterval(intervalId);
+          activeCountdowns.delete(reminder.id);
+          if (clkEl) clkEl.textContent = '🔔';
+          await fireLocalReminder(reminder);
+          setTimeout(() => {
+            document.getElementById(`cdt-${reminder.id}`)?.remove();
+            if (container.children.length === 0) panel.classList.remove('active');
+          }, 4000);
+        } else {
+          if (clkEl) {
+            clkEl.textContent = formatCountdown(left);
+            clkEl.classList.toggle('urgent', left < 30000);
+          }
+        }
+      }, 1000);
+
+      activeCountdowns.set(reminder.id, intervalId);
+    }
+
+    function stopCountdown(id) {
+      const interval = activeCountdowns.get(id);
+      if (interval) { clearInterval(interval); activeCountdowns.delete(id); }
+      document.getElementById(`cdt-${id}`)?.remove();
+      const container = document.getElementById('countdownTimers');
+      if (container && container.children.length === 0) {
+        document.getElementById('countdownPanel')?.classList.remove('active');
+      }
+    }
+
+    async function fireLocalReminder(reminder) {
+      const text  = reminder.text || '';
+      const lang  = reminder.language || 'en';
+      const title = titleMap[lang] || '⏰ Reminder';
+
+      speak(text, lang);
+      showToast('⏰ ' + text, 'success');
+
+      if (Notification.permission === 'granted') {
+        try {
+          const reg = await navigator.serviceWorker.ready;
+          await reg.showNotification(title, {
+            body: text,
+            icon: '/icons/icon-192.png',
+            badge: '/icons/icon-192.png',
+            tag: reminder.id,
+            requireInteraction: true,
+            data: { text, lang, id: reminder.id },
+            vibrate: [200, 100, 200, 100, 400],
+          });
+        } catch (e) { console.warn('[Notification]', e); }
+      }
+
+      markReminderSentInUI(reminder.id);
+
+      // Tell server — so asyncio scheduler skips it (already fired by client)
+      try {
+        await fetch(`${API}/reminders/${reminder.id}/mark-sent`, { method: 'POST' });
+      } catch (_) {}
+    }
+
+    function markReminderSentInUI(id) {
+      const el = document.querySelector(`.reminder-item[data-id="${id}"]`);
+      if (!el) return;
+      el.classList.add('sent');
+      const badge = el.querySelector('.badge');
+      if (badge) { badge.className = 'badge badge-sent'; badge.textContent = 'Sent'; }
+    }
+
     // ── Set reminder ──────────────────────────────────────────────────────────
     document.getElementById('setReminderBtn').addEventListener('click', async () => {
       const voiceText  = txBox.textContent.trim();
@@ -661,6 +808,7 @@
         txBox.textContent = '';
         document.getElementById('manualText').value = '';
         prependReminder(reminder);
+        startCountdown(reminder);   // start client-side exact timer
 
         // voice confirmation
         speak(
@@ -716,7 +864,10 @@
         const list = await res.json();
         if (list.length === 0) return;
         document.getElementById('emptyState')?.remove();
-        list.slice().reverse().forEach(prependReminder);
+        list.slice().reverse().forEach(r => {
+          prependReminder(r);
+          if (!r.sent) startCountdown(r);
+        });
       } catch (e) {
         console.warn('Could not load reminders:', e);
       }
@@ -724,6 +875,7 @@
 
     async function deleteReminder(id, el) {
       try {
+        stopCountdown(id);
         await fetch(`${API}/reminders/${id}`, { method: 'DELETE' });
         el.remove();
         if (!document.querySelector('.reminder-item')) {
@@ -742,20 +894,36 @@
       }
     });
 
+    // ── SSE Keepalive — keeps Render server awake ────────────────────────────
+    function startKeepalive() {
+      const es = new EventSource(`${API}/keepalive`);
+      es.onmessage = e => {
+        // Server is alive — optionally log heartbeat
+        // console.log('[SSE]', e.data);
+      };
+      es.onerror = () => {
+        // Connection dropped — reconnect after 5s
+        es.close();
+        setTimeout(startKeepalive, 5000);
+      };
+      console.log('[SSE] Keepalive connected');
+    }
+
     // ── Boot ──────────────────────────────────────────────────────────────────
     (async () => {
       await registerSW();
       await fetchVapidKey();
       await checkPushPermission();
-      // restore existing web push subscription
       if ('serviceWorker' in navigator && 'PushManager' in navigator) {
         const reg = await navigator.serviceWorker.ready;
         pushSub = await reg.pushManager.getSubscription();
       }
-      // init FCM for mobile push (runs in background)
       initFCM();
       await loadReminders();
+      // Start SSE keepalive AFTER everything is loaded
+      startKeepalive();
     })();
+
   </script>
 </body>
 </html>

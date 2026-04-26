@@ -1,83 +1,84 @@
-// sw.js – JarAI Service Worker
-const CACHE_NAME = 'jarai-v1';
-const ASSETS = ['/', '/index.html', '/manifest.json', '/icons/icon-192.png', '/icons/icon-512.png'];
+// sw.js — JarAI Service Worker
+// Handles WebPush events + notification click → speaks reminder text
 
-// ── Install ───────────────────────────────────────────────────────────────────
-self.addEventListener('install', event => {
-  event.waitUntil(
-    caches.open(CACHE_NAME).then(cache => cache.addAll(ASSETS)).catch(() => {})
-  );
-  self.skipWaiting();
-});
+const CACHE_NAME = 'jarai-v2';
 
-// ── Activate ──────────────────────────────────────────────────────────────────
-self.addEventListener('activate', event => {
-  event.waitUntil(
-    caches.keys().then(keys =>
-      Promise.all(keys.filter(k => k !== CACHE_NAME).map(k => caches.delete(k)))
-    )
-  );
-  self.clients.claim();
-});
+// ── Install / Activate ─────────────────────────────────────────────────────
+self.addEventListener('install',  () => self.skipWaiting());
+self.addEventListener('activate', e  => e.waitUntil(self.clients.claim()));
 
-// ── Fetch (cache-first for static assets) ────────────────────────────────────
-self.addEventListener('fetch', event => {
-  if (event.request.method !== 'GET') return;
-  event.respondWith(
-    caches.match(event.request).then(cached => cached || fetch(event.request))
-  );
-});
-
-// ── Push notification received ────────────────────────────────────────────────
-self.addEventListener('push', event => {
-  let data = { title: '⏰ Reminder', body: 'Time to check your reminder!', lang: 'en' };
-
+// ── Push event (WebPush fallback for desktop) ──────────────────────────────
+// On Android you'll mostly get FCM, but this handles the WebPush path.
+self.addEventListener('push', e => {
+  let payload = {};
   try {
-    data = event.data.json();
+    payload = e.data?.json() || {};
   } catch (_) {
-    data.body = event.data?.text() || data.body;
+    payload = { title: '⏰ Reminder', body: e.data?.text() || '' };
   }
 
-  const options = {
-    body: data.body,
-    icon: '/icons/icon-192.png',
-    badge: '/icons/icon-96.png',
-    vibrate: [200, 100, 200, 100, 200],
-    tag: data.id || 'jarai-reminder',
-    renotify: true,
-    requireInteraction: true,
-    data: { lang: data.lang, text: data.body },
-    actions: [
-      { action: 'dismiss', title: 'Dismiss' },
-    ],
-  };
+  // Normalise — payload can be { title, body, lang, id }
+  // OR the full FCM-style { notification: {title,body}, data: {lang,id,body} }
+  const title = payload.title
+    || payload.notification?.title
+    || '⏰ Reminder';
 
-  event.waitUntil(self.registration.showNotification(data.title, options));
+  const body  = payload.body
+    || payload.data?.body
+    || payload.notification?.body
+    || '';          // ← Never "undefined" because we fall back to ''
+
+  const lang  = payload.lang  || payload.data?.lang  || 'en';
+  const id    = payload.id    || payload.data?.id    || '';
+
+  e.waitUntil(
+    self.registration.showNotification(title, {
+      body,
+      icon:             '/icons/icon-192.png',
+      badge:            '/icons/icon-192.png',
+      tag:              id || 'jarai-reminder',
+      requireInteraction: true,          // stays on screen until tapped (Android)
+      vibrate:          [200, 100, 200, 100, 400],
+      data:             { text: body, lang, id },
+    })
+  );
 });
 
-// ── Notification click → speak the reminder via TTS in the tab ───────────────
-self.addEventListener('notificationclick', event => {
-  event.notification.close();
+// ── Notification click ────────────────────────────────────────────────────
+// When user taps the notification:
+//   1. Close it
+//   2. Focus / open the app window
+//   3. Post a message → app calls speak() with the reminder text
+self.addEventListener('notificationclick', e => {
+  e.notification.close();
 
-  if (event.action === 'dismiss') return;
+  const { text, lang } = e.notification.data || {};
 
-  const { lang, text } = event.notification.data || {};
+  e.waitUntil(
+    self.clients.matchAll({ type: 'window', includeUncontrolled: true }).then(clientList => {
+      // Helper: post SPEAK message to a client
+      const postSpeak = (client) => {
+        if (text) {
+          client.postMessage({ type: 'SPEAK_REMINDER', text, lang: lang || 'en' });
+        }
+      };
 
-  event.waitUntil(
-    clients.matchAll({ type: 'window', includeUncontrolled: true }).then(windowClients => {
-      // focus existing window or open a new one
-      const existing = windowClients.find(c => c.focused || c.visibilityState === 'visible');
-      const target   = existing || windowClients[0];
-
-      if (target) {
-        target.focus();
-        target.postMessage({ type: 'SPEAK_REMINDER', text, lang });
-        return;
+      // If app window already open → focus it and speak
+      for (const client of clientList) {
+        if ('focus' in client) {
+          client.focus();
+          postSpeak(client);
+          return;
+        }
       }
-      return clients.openWindow('/').then(win => {
-        if (win) {
-          // slight delay so the page can load the message listener
-          setTimeout(() => win.postMessage({ type: 'SPEAK_REMINDER', text, lang }), 1500);
+
+      // Otherwise open a new window, then speak once it's ready
+      return self.clients.openWindow('/').then(newClient => {
+        if (newClient && text) {
+          // Give page a moment to load its SW message listener
+          setTimeout(() => {
+            newClient.postMessage({ type: 'SPEAK_REMINDER', text, lang: lang || 'en' });
+          }, 1500);
         }
       });
     })
